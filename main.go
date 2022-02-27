@@ -22,26 +22,36 @@
 package main
 
 import (
-	"encoding/json"
-	"io/ioutil"
+	"context"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/xid"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
+// swagger:parameters recipes newRecipe
 type Recipe struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Tags         []string  `json:"tags"`
-	Ingredients  []string  `json:"ingredients"`
-	Instructions []string  `json:"instructions"`
-	PublishedAt  time.Time `json:"publishedAt"`
+	//swagger:ignore
+	ID           primitive.ObjectID `json:"id" bson:"_id"`
+	Name         string             `json:"name" bson:"name"`
+	Tags         []string           `json:"tags" bson:"tags"`
+	Ingredients  []string           `json:"ingredients" bson:"ingredients"`
+	Instructions []string           `json:"instructions" bson:"instructions"`
+	PublishedAt  time.Time          `json:"publishedAt" bson:"publishedAt"`
 }
 
-var recipes []Recipe
+var (
+	client     *mongo.Client
+	collection *mongo.Collection
+)
 
 // swagger:operation POST /recipes recipes newRecipe
 //
@@ -55,6 +65,8 @@ var recipes []Recipe
 //         description: Successful operation
 //    '400':
 //         description: Invalid input
+//		'500':
+//				 description: Interanl server error
 func NewRecipeHandler(c *gin.Context) {
 	var recipe Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
@@ -62,9 +74,18 @@ func NewRecipeHandler(c *gin.Context) {
 		return
 	}
 
-	recipe.ID = xid.New().String()
+	recipe.ID = primitive.NewObjectID()
 	recipe.PublishedAt = time.Now()
-	recipes = append(recipes, recipe)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := collection.InsertOne(ctx, recipe)
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while inserting a new recipe"})
+		return
+	}
+
 	c.JSON(http.StatusOK, recipe)
 }
 
@@ -78,7 +99,25 @@ func NewRecipeHandler(c *gin.Context) {
 // responses:
 //    '200':
 //         description: Successful operation
+//		'500':
+//				 description: Interanl server error
 func ListRecipesHandler(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cur, err := collection.Find(ctx, bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer cur.Close(ctx)
+
+	recipes := make([]Recipe, 0)
+	for cur.Next(ctx) {
+		var recipe Recipe
+		cur.Decode(&recipe)
+		recipes = append(recipes, recipe)
+	}
+
 	c.JSON(http.StatusOK, recipes)
 }
 
@@ -100,8 +139,8 @@ func ListRecipesHandler(c *gin.Context) {
 //         description: Successful operation
 //    '400':
 //         description: Invalid input
-//    '404':
-//         description: Invalid recipe ID
+//		'500':
+//				 description: Interanl server error
 func UpdateRecipeHandler(c *gin.Context) {
 	id := c.Param("id")
 	var recipe Recipe
@@ -111,20 +150,30 @@ func UpdateRecipeHandler(c *gin.Context) {
 		return
 	}
 
-	index := -1
-	for i := 0; i < len(recipes); i++ {
-		if recipes[i].ID == id {
-			index = i
-		}
-	}
-
-	if index == -1 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
+	objectId, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Could not parse id"})
 		return
 	}
 
-	recipes[index] = recipe
-	c.JSON(http.StatusOK, recipe)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": objectId}, bson.D{
+		primitive.E{Key: "$set", Value: bson.D{
+			primitive.E{Key: "name", Value: recipe.Name},
+			primitive.E{Key: "instructions", Value: recipe.Instructions},
+			primitive.E{Key: "ingredients", Value: recipe.Ingredients},
+			primitive.E{Key: "tags", Value: recipe.Tags},
+		}},
+	})
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Recipe has been updated"})
 }
 
 // swagger:operation DELETE /recipes/{id} recipes deleteRecipe
@@ -143,23 +192,29 @@ func UpdateRecipeHandler(c *gin.Context) {
 // responses:
 //    '200':
 //         description: Successful operation
-//    '404':
-//         description: Invalid recipe ID
+//    '400':
+//         description: Invalid input
+//		'500':
+//				 description: Interanl server error
 func DeleteRecipeHandler(c *gin.Context) {
 	id := c.Param("id")
-	index := -1
-	for i := 0; i < len(recipes); i++ {
-		if recipes[i].ID == id {
-			index = i
-		}
-	}
 
-	if index == -1 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
+	objectId, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Could not parse id"})
 		return
 	}
 
-	recipes = append(recipes[:index], recipes[index+1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = collection.DeleteOne(ctx, bson.M{"_id": objectId})
+	if err != nil {
+		log.Println(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Recipe has been deleted"})
 }
 
@@ -180,6 +235,8 @@ func DeleteRecipeHandler(c *gin.Context) {
 //    '200':
 //         description: Successful operation
 func SearchRecipesHandler(c *gin.Context) {
+	var recipes []Recipe
+
 	tag := c.Query("tag")
 	listOfRecipes := make([]Recipe, 0)
 
@@ -201,16 +258,24 @@ func SearchRecipesHandler(c *gin.Context) {
 }
 
 func init() {
-	recipes = make([]Recipe, 0)
-	file, err := ioutil.ReadFile("recipes.json")
+	var err error
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err = mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
-	err = json.Unmarshal(file, &recipes)
-	if err != nil {
-		panic(err)
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err = client.Ping(ctx, readpref.Primary()); err != nil {
+		log.Fatal(err)
 	}
+
+	log.Println("Connected to MongoDB")
+
+	collection = client.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
 }
 
 func main() {
