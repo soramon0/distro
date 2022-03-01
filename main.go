@@ -28,36 +28,43 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/soramon0/distro/handlers"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var client *mongo.Client
-
-func init() {
-	var err error
-
+func initDB() (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err = mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err = client.Ping(ctx, readpref.Primary()); err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	log.Println("Connected to MongoDB")
+	return client, nil
 }
 
 func main() {
-	collection := client.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
-	recipesHandler := handlers.NewRecipesHandler(context.Background(), collection)
+	dbClient, err := initDB()
+	if err != nil {
+		log.Fatal(err)
+	}
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+	collection := dbClient.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
+	recipesHandler := handlers.NewRecipesHandler(context.Background(), collection, redisClient)
 
 	router := gin.Default()
 	router.POST("/recipes", recipesHandler.NewRecipeHandler)
