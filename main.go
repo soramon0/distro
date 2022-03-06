@@ -67,7 +67,9 @@ func main() {
 	collection := dbClient.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
 	recipesHandler := handlers.NewRecipesHandler(context.Background(), collection, redisClient)
 
-	models.SeedRecipes(collection, redisClient)
+	if os.Getenv("GIN_MODE") == gin.DebugMode {
+		models.SeedRecipes(collection, redisClient)
+	}
 
 	router := gin.Default()
 	router.POST("/recipes", recipesHandler.NewRecipeHandler)
