@@ -30,6 +30,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/soramon0/distro/handlers"
+	"github.com/soramon0/distro/models"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -65,6 +66,8 @@ func main() {
 	})
 	collection := dbClient.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
 	recipesHandler := handlers.NewRecipesHandler(context.Background(), collection, redisClient)
+
+	models.SeedRecipes(collection, redisClient)
 
 	router := gin.Default()
 	router.POST("/recipes", recipesHandler.NewRecipeHandler)
