@@ -24,11 +24,11 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
+	"github.com/soramon0/distro/conf"
 	"github.com/soramon0/distro/handlers"
 	"github.com/soramon0/distro/models"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -36,10 +36,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-func initDB() (*mongo.Client, error) {
+func initDB(uri string) (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,12 @@ func initDB() (*mongo.Client, error) {
 }
 
 func main() {
-	dbClient, err := initDB()
+	config, err := conf.LoadConfig(".")
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	dbClient, err := initDB(config.MONGO_URI)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -64,10 +69,10 @@ func main() {
 		Password: "",
 		DB:       0,
 	})
-	collection := dbClient.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
+	collection := dbClient.Database(config.MONGO_DATABASE).Collection("recipes")
 	recipesHandler := handlers.NewRecipesHandler(context.Background(), collection, redisClient)
 
-	if os.Getenv("GIN_MODE") == gin.DebugMode {
+	if config.GIN_MODE == gin.DebugMode {
 		models.SeedRecipes(collection, redisClient)
 	}
 
